@@ -10,11 +10,15 @@
 // same bytes: copying files and calling buildDossier are both
 // deterministic, and nothing here reads the clock, the network, or
 // any environment value except the output directory override.
+// It also runs as an unprivileged user against a harness-owned
+// /output on a read-only file system: never remove, rename or chmod
+// the output directory itself, and never write anywhere but inside
+// it (see the cleaning step below for the rejection this caused).
 //
 // Outside the grader, MAKEFUN_OUTPUT_DIR stands in for /output:
 //   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
 
-import { cpSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildDossier } from './vendor/makefun-frontend.ts';
@@ -24,15 +28,24 @@ const repoRoot = fileURLToPath(new URL('.', import.meta.url));
 const outDir = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
 
 // Start from a clean output directory so a stale file from an
-// earlier run can never leak into the entry.
-rmSync(outDir, { recursive: true, force: true });
+// earlier run can never leak into the entry. Only the CONTENTS are
+// removed, never the directory itself: the grader creates /output
+// itself and runs this program as an unprivileged user, so deleting
+// the directory (rmdir on a harness-owned, possibly mounted path)
+// throws EACCES/EBUSY and the run dies before writing anything —
+// that is exactly what rejected the first submission. Deleting the
+// children of a writable directory is all the cleanliness we need,
+// and it is what the kit's starter does (it never removes /output).
 mkdirSync(outDir, { recursive: true });
+for (const name of readdirSync(outDir)) {
+  rmSync(join(outDir, name), { recursive: true, force: true });
+}
 
 // The site itself, plain static files under app/.
 cpSync(join(repoRoot, 'app'), join(outDir, 'app'), { recursive: true });
 
-// The screenshots, real renders of the site's own code.
-mkdirSync(join(outDir, 'screenshots'), { recursive: true });
+// The screenshots, real renders of the site's own code. cpSync
+// creates the destination directory itself, as in the kit starter.
 if (existsSync(join(repoRoot, 'screenshots'))) {
   cpSync(join(repoRoot, 'screenshots'), join(outDir, 'screenshots'), { recursive: true });
 }
